@@ -61,7 +61,7 @@ func (k *Cluster) getKubeconfig() (string, error) {
 
 	k.kubecfgFile = file.Name()
 
-	if n, err := io.Copy(file, p.StdOut()); n == 0 || err != nil {
+	if n, err := io.Copy(file, strings.NewReader(p.Result())); n == 0 || err != nil {
 		return "", fmt.Errorf("kind kubecfg file: bytes copied: %d: %w]", n, err)
 	}
 
