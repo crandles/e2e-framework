@@ -35,11 +35,11 @@ func LoadUnstructuredYAML(filename string) (*unstructured.Unstructured, error) {
 	if err != nil {
 		return nil, errors.Wrapf(err, "error reading yaml file: %q", filename)
 	}
-	crd := unstructured.Unstructured{}
-	if err := yaml.Unmarshal(file, &crd); err != nil {
+	doc := unstructured.Unstructured{}
+	if err := yaml.Unmarshal(file, &doc); err != nil {
 		return nil, errors.Wrapf(err, "error decoding yaml file: %s", filename)
 	}
-	return &crd, nil
+	return &doc, nil
 }
 
 func listResourceFiles(directory string) ([]string, error) {
