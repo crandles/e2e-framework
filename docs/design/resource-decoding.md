@@ -11,10 +11,10 @@ This document proposes the design for a set of decoding functions in the resourc
 5. [Design Components](#Design-Components)
     * [Patches](#Patches)
     * [Handlers](#Handlers)
-    * [Decoding a single-document YAML/JSON input](#Decoding-a-single-document-YAML/JSON-input)
-    * [Decoding a multi-document YAML/JSON input](#Decoding-a-multi-document-YAML/JSON-input)
-        * [Decoding to a known object type](#Decoding-to-a-known-object-type)
-        * [Decoding without knowing the object type](#Decoding-without-knowing-the-object-type)
+    * [Decoding a single-document YAML/JSON input](#decoding-a-single-document-yamljson-input)
+    * [Decoding a multi-document YAML/JSON input](#decoding-a-multi-document-yamljson-input)
+        * [Decoding to a known object type](#decoding-without-knowing-the-object-type)
+        * [Decoding without knowing the object type](#decoding-without-knowing-the-object-type)
 6. [Decode Proposal](#Decode-Proposal)
     * [Pre-defined Decoders](#Pre-defined-Decoders)
     * [Pre-defined Helpers](#Pre-defined-Helpers)
@@ -98,7 +98,7 @@ func CreateIfNotExistsHandler(*Resources, opts ...CreateOption) HandlerFunc
 
 ### Decoding a single-document YAML/JSON input
 
-The following are alternative ideas to implementing decoding input that contain a single `k8s.Object` type. Example:
+The following are proposed function signatures for decoding input that contain a single `k8s.Object` type. Example:
 
 ```yaml
 apiVersion: v1
@@ -163,7 +163,7 @@ if sa, ok := obj.(*v1.ServiceAccount); ok {
 
 ### Decoding a multi-document YAML/JSON input
 
-The following are alternative ideas to implementing decoding input that may contain multiple distinct `k8s.Object` types. Example:
+The following are proposed function signatures for decoding input that may contain multiple distinct `k8s.Object` types. Example:
 
 ```yaml
 ## testdata/test-setup.yaml
@@ -185,85 +185,6 @@ kind: ServiceAccount
 metadata:
   name: my-serivce-account
   namespace: myappns
-```
-
-
-#### **Decoding to a known object type**
-
-The following are variations on decoding an input to a known Go type.
-
-Example parameters: 
-- `obj k8s.Object` - [*v1.ServiceAccount](https://pkg.go.dev/k8s.io/api/core/v1#ServiceAccount)
-- `list k8s.ObjectList` - [*v1.ServiceAccountList](https://pkg.go.dev/k8s.io/api/core/v1#ServiceAccountList)).
-
-If an input contains multiple Kinds of object, `Unstructured` may be used (Resource data is accessible via `map[string]interface{}`):
-- `obj k8s.Object` - [`*unstructured.Unstructured`](https://pkg.go.dev/k8s.io/apimachinery/pkg/apis/meta/v1/unstructured)
-- `list k8s.ObjectList` - [`*unstructured.UnstructuredList`](https://pkg.go.dev/k8s.io/apimachinery/pkg/apis/meta/v1/unstructuredList)
-
-Decoding into the wrong object **will** provide unexpected results.
-
-1. Use the provided `k8s.Object` type as a base for decoding each YAML document.
-
-```go
-func DecodeObjects(manifest io.Reader, obj k8s.Object, patches ...MutateFunc) ([]k8s.Object, error)
-```
-
-Usage:
-
-```go
-objects, err := DecodeObjects(strings.NewReader("..."), &unstructured.Unstructured{})
-for _, obj := range objects {
-    err := klient.Create(obj)
-    ...
-}
-```
-
-2. Decode into the provided `k8s.ObjectList`
-
-```go
-func DecodeList(manifest io.Reader, obj k8s.ObjectList, patches ...MutateFunc) error
-```
-
-Usage:
-
-```go
-list := &unstructured.UnstructuredList{}
-err := DecodeList(strings.NewReader("..."), list)
-for _, obj := range list.Items {
-    err := klient.Create(obj)
-    ...
-}
-```
-
-3. Decode each document into the provided `k8s.Object` base and call handlerFn for each processed object. If `handlerFn` returns an error, decoding is halted.
-
-```go
-func DecodeEachDocument(manifest io.Reader, base k8s.Object, handlerFn HandlerFunc, patches ...MutateFunc) error
-```
-
-Usage:
-
-```go
-err := DecodeEachDocument(strings.NewReader("..."), &unstructured.Unstructured{}, func(ctx context.Context, obj ks8.Object) error {
-    return klient.Create(obj)
-})
-```
-
-Usage with pre-defined HandlerFunc:
-
-```go
-err := DecodeEachDocument(strings.NewReader("..."), &unstructured.Unstructured{}, CreateHandler(klient.Resources(namespace)))
-```
-
-Usage with pre-defined HandlerFunc and MutateFuncs:
-
-```go
-err := DecodeEachDocument(
-    strings.NewReader("..."),
-    &unstructured.Unstructured{},
-    CreateHandler(klient.Resources(namespace)), // create each decoded object after applying the following patches
-    MutateLabels(map[string]string{"test" : "feature-X"}), MutateAnnotations(map[string]string{"test" : "feature-X"}),
-)
 ```
 
 #### **Decoding without knowing the object type**
