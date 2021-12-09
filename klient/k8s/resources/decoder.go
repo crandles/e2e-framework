@@ -59,7 +59,7 @@ func listResourceFiles(directory string) ([]string, error) {
 		return nil, err
 	}
 	filenames := append(yamls, append(ymls, jsons...)...)
-	sort.Strings(filenames) // sort before returning files for a consisent order
+	sort.Strings(filenames) // sort before returning files for a consistent order
 	return filenames, nil
 }
 
@@ -327,7 +327,7 @@ func DeleteHandler(r *Resources, opts ...DeleteOption) HandlerFunc {
 // IgnoreErrorHandler returns a HandlerFunc that will ignore the provided error if the errorMatcher returns true
 func IgnoreErrorHandler(handler HandlerFunc, errorMatcher func(err error) bool) HandlerFunc {
 	return func(ctx context.Context, obj k8s.Object) error {
-		if err := handler(ctx, obj); err != nil && errorMatcher(err) {
+		if err := handler(ctx, obj); err != nil && !errorMatcher(err) {
 			return err
 		}
 		return nil

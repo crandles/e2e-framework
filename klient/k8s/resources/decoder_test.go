@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/e2e-framework/klient/k8s"
@@ -239,20 +240,24 @@ func TestHandlerFuncs(t *testing.T) {
 	}
 	dir := filepath.Join("testdata", "examples")
 	patches := []MutateFunc{MutateNamespace(handlerNS.Name), MutateLabels(map[string]string{"injected": "labelvalue"})}
+	// lookup all objects to use for verification / deletion steps later on
+	objects, err := DecodeAllFiles(dir, nil, patches...)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	t.Run("DecodeEach_Create", func(t *testing.T) {
 		if err := DecodeEachFile(context.TODO(), dir, nil, CreateHandler(res), patches...); err != nil {
 			t.Fatal(err)
 		}
-		t.Run("GetHandler", func(t *testing.T) {
+		t.Run("GetHandler", func(t *testing.T) { // verify creation and patches by retrieving the object
 			count := 0
 			serviceAccounts := 0
 			configs := 0
-			objects, err := DecodeAllFiles(dir, nil, patches...)
-			if err != nil {
-				t.Fatal(err)
-			}
+
 			for i := range objects {
+				// GetHandler is intended to be used in a callee's HandlerFunc as a way to retrieve a new object from the API, referenced from a potentially stale input stream.
+				// It is being re-used here out of convenience.
 				if err := GetHandler(res, func(ctx context.Context, obj k8s.Object) error {
 					if labels := objects[i].GetLabels(); labels["injected"] != "labelvalue" {
 						t.Fatalf("unexpected value in labels: %q", labels["injected"])
@@ -282,6 +287,28 @@ func TestHandlerFuncs(t *testing.T) {
 				t.Fatalf("expected %d serviceAccounts got %d", expected, serviceAccounts)
 			} else if expected := 1; expected != configs {
 				t.Fatalf("expected %d configs got %d", expected, configs)
+			}
+		})
+	})
+
+	t.Run("DecodeEach_Delete", func(t *testing.T) {
+		if err := DecodeEachFile(context.TODO(), dir, nil, DeleteHandler(res), patches...); err != nil {
+			t.Fatal(err)
+		}
+
+		t.Run("Verify", func(t *testing.T) {
+			count := 0
+			for i := range objects {
+				if err := IgnoreErrorHandler(GetHandler(res, func(ctx context.Context, obj k8s.Object) error {
+					t.Logf("Object { apiVersion: %q; Kind:%q; Namespace:%q; Name:%q } found", obj.GetObjectKind().GroupVersionKind().Version, obj.GetObjectKind().GroupVersionKind().Kind, obj.GetNamespace(), obj.GetName())
+					count++
+					return nil
+				}), apierrors.IsNotFound)(ctx, objects[i]); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if count > 0 {
+				t.Fatalf("%d test objects were not deleted", count)
 			}
 		})
 	})
