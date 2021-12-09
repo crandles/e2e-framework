@@ -1,18 +1,19 @@
 package resources
 
 import (
+	"bufio"
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"strings"
 
-	"k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/conversion"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
@@ -63,18 +64,56 @@ func listResourceFiles(directory string) ([]string, error) {
 }
 
 // MutateFunc is a function executed after an object is decoded to alter its state in a pre-defined way, and can be used to apply defaults.
-type MutateFunc func(k8s.Object) error
+// Returning an error halts decoding of any further objects.
+type MutateFunc func(obj k8s.Object) error
 
-// DecodeDirectory loads YAML or JSON files from the given directory into a copy of the provided object.
-// Patches are applied to each object after they have been decoded.
+// HandlerFunc is a function executed after an object has been decoded and patched. If an error is returned, futher decoding is halted.
+type HandlerFunc func(ctx context.Context, obj k8s.Object) error
+
+// DecodeEachFile resolves files at the filepath (with Glob support), decoding files that match the common JSON or YAML file extensions (json, yaml, yml). Supports multi-document files.
 //
-// Files with the extension `.yaml`, `.yml`, and `.json` are considered.
+// Example filepath:
+// `path/to/dir` -- matches appropriate files in the directory
+// `path/to/dir/file-prefix-` -- (if not also a directory) matches files in the directory that start "file-prefix-"
 //
-// Specify an optional filename prefix in the directory string to filter directory files further, example:
-// - "testdata" -- matches appropriate files in the `testdata` directory
-// - "testdata/example-sa" -- matches files in the `testdata` directory that start with `example-sa` (if directory string does not resolve to a directory)
-func DecodeDirectory(directory string, obj k8s.Object, patches ...MutateFunc) ([]k8s.Object, error) {
-	files, err := listResourceFiles(directory)
+// If provided, the defaults GroupVersionKind is used to determine the k8s.Object underlying type, otherwise rely the innate typing of the scheme.
+// Falls back to the unstructured.Unstructured type if a matching type cannot be found for the Kind.
+//
+// If handlerFn returns an error, decoding is halted.
+// Patches are optional and applied after decoding and before handlerFn is executed.
+//
+func DecodeEachFile(ctx context.Context, filepath string, defaults *schema.GroupVersionKind, handlerFn HandlerFunc, patches ...MutateFunc) error {
+	files, err := listResourceFiles(filepath)
+	if err != nil {
+		return err
+	}
+	for _, file := range files {
+		f, err := os.Open(file)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		o, err := DecodeAll(f, defaults, patches...)
+		if err != nil {
+			return err
+		}
+		for _, obj := range o {
+			handlerFn(ctx, obj)
+		}
+	}
+	return nil
+}
+
+// DecodeAllFiles resolves files at the filepath (with Glob support), decoding files that match the common JSON or YAML file extensions (json, yaml, yml). Supports multi-document files.
+//
+// filepath may be a directory string or include an optional filename prefix, as in DecodeEachFile.
+//
+// If provided, the defaults GroupVersionKind is used to determine the k8s.Object underlying type, otherwise rely the innate typing of the scheme.
+// Falls back to the unstructured.Unstructured type if a matching type cannot be found for the Kind.
+//
+// Patches are optional and applied after decoding.
+func DecodeAllFiles(filepath string, defaults *schema.GroupVersionKind, patches ...MutateFunc) ([]k8s.Object, error) {
+	files, err := listResourceFiles(filepath)
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +124,7 @@ func DecodeDirectory(directory string, obj k8s.Object, patches ...MutateFunc) ([
 			return nil, err
 		}
 		defer f.Close()
-		o, err := DecodeObjects(f, obj, patches...)
+		o, err := DecodeAll(f, defaults, patches...)
 		if err != nil {
 			return nil, err
 		}
@@ -94,136 +133,77 @@ func DecodeDirectory(directory string, obj k8s.Object, patches ...MutateFunc) ([
 	return objects, nil
 }
 
-// DecodeObjects decodes a multi-document YAML or JSON file into a copy of the provided k8s.Object. Patches are applied
-// to each object after they have been decoded.
-func DecodeObjects(manifest io.Reader, obj k8s.Object, patches ...MutateFunc) ([]k8s.Object, error) {
-	// copy base object to preserve for each decoding iteration
-	base := obj.DeepCopyObject()
-	objects := []k8s.Object{}
-	// start decoding documents
-	decoder := yaml.NewYAMLOrJSONDecoder(manifest, 1024)
+// Decode a stream of documents of any Kind using either the innate typing of the scheme or the default kind, group, and version provided.
+// Falls back to the unstructured.Unstructured type if a matching type cannot be found for the Kind.
+// If handlerFn returns an error, decoding is halted.
+// Patches are optional and applied after decoding and before handlerFn is executed.
+func DecodeEach(ctx context.Context, manifest io.Reader, defaults *schema.GroupVersionKind, handlerFn HandlerFunc, patches ...MutateFunc) error {
+	decoder := yaml.NewYAMLReader(bufio.NewReader(manifest))
 	for {
-		obj := base.DeepCopyObject().(k8s.Object) // copy the base object to decode new object to
-		if err := decoder.Decode(obj); errors.Is(err, io.EOF) {
+		b, err := decoder.Read()
+		if errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			return err
+		}
+		obj, err := DecodeAny(bytes.NewReader(b), defaults, patches...)
+		if err != nil {
+			return err
+		}
+		handlerFn(ctx, obj)
+	}
+	return nil
+}
+
+// Decode  a stream of  documents of any Kind using either the innate typing of the scheme or the default kind, group, and version provided.
+// Falls back to the unstructured.Unstructured type if a matching type cannot be found for the Kind.
+// Patches are optional and applied after decoding.
+func DecodeAll(manifest io.Reader, defaults *schema.GroupVersionKind, patches ...MutateFunc) ([]k8s.Object, error) {
+	decoder := yaml.NewYAMLReader(bufio.NewReader(manifest))
+	objects := []k8s.Object{}
+	for {
+		b, err := decoder.Read()
+		if errors.Is(err, io.EOF) {
 			break
 		} else if err != nil {
 			return nil, err
 		}
-		for _, patch := range patches {
-			patch(obj)
+		obj, err := DecodeAny(bytes.NewReader(b), defaults, patches...)
+		if err != nil {
+			return nil, err
 		}
 		objects = append(objects, obj)
 	}
 	return objects, nil
 }
 
-type object struct {
-	metav1.ObjectMeta
-	runtime.Object
-}
-
-// // DecodeObjectsByGVK decodes a multi-document YAML or JSON file into a copy of the provided k8s.Object. Patches are applied
-// // to each object after they have been decoded.
-// func DecodeObjectsByGVK(manifest io.Reader, kind schema.GroupVersionKind, patches ...MutateFunc) ([]k8s.Object, error) {
-// 	objects := []k8s.Object{}
-// 	// start decoding documents
-// 	decoder := yaml.NewYAMLOrJSONDecoder(manifest, 1024)
-// 	for {
-// 		o, err := scheme.Scheme.New(kind)
-// 		if err != nil {
-// 			return objects, err
-// 		}
-// 		obj := k8s.Object(&object{metav1.ObjectMeta{}, o})
-// 		if err := decoder.Decode(obj); errors.Is(err, io.EOF) {
-// 			break
-// 		} else if err != nil {
-// 			return nil, err
-// 		}
-// 		for _, patch := range patches {
-// 			patch(obj)
-// 		}
-// 		objects = append(objects, obj)
-// 	}
-// 	return objects, nil
-// }
-
-// DecodeListItems decodes a multi-document YAML or JSON file into items on the provided k8s.ObjectList. Patches are applied
-// to each object after they have been decoded.
-func DecodeListItems(manifest io.Reader, obj k8s.ObjectList, patches ...MutateFunc) error {
-	// get a pointer to the list's Items slice
-	itemsPtr, err := meta.GetItemsPtr(obj)
-	if err != nil {
-		return err
-	}
-	// convert to pointer so we can append items
-	items, err := conversion.EnforcePtr(itemsPtr)
-	if err != nil {
-		return err
-	}
-	// determine the type of the slice Items and create a new reference object as a base to decode into for each document
-	base := reflect.New(items.Type().Elem()).Interface().(k8s.Object)
-	// start decoding documents
-	decoder := yaml.NewYAMLOrJSONDecoder(manifest, 1024)
-	for {
-		obj := base.DeepCopyObject().(k8s.Object) // copy the base object to decode new object to
-		if err := decoder.Decode(obj); errors.Is(err, io.EOF) {
-			break
-		} else if err != nil {
-			return err
-		}
-		for _, patch := range patches {
-			patch(obj)
-		}
-		items.Set(reflect.Append(items, reflect.ValueOf(obj).Elem()))
-	}
-	return nil
-}
-
-// DecodeDocuments decodes a multi-document YAML or JSON file into a copy of the provided k8s.Object and invokes
-// fn on each decoded object, after patches have been applied.
-func DecodeDocuments(manifest io.Reader, base k8s.Object, fn func(k8s.Object), patches ...MutateFunc) error {
-	// start decoding documents
-	decoder := yaml.NewYAMLOrJSONDecoder(manifest, 1024)
-	for {
-		obj := base.DeepCopyObject().(k8s.Object) // copy the base object to decode new object to
-		if err := decoder.Decode(obj); errors.Is(err, io.EOF) {
-			break
-		} else if err != nil {
-			return err
-		}
-		for _, patch := range patches {
-			patch(obj)
-		}
-		fn(obj)
-	}
-	return nil
-}
-
-// Decoder decodes a multi-document YAML or JSON file into Go objects for any types that have been registered with scheme.Scheme.
-// If the GroupVersionKind defaults is provided, it is used when determining the object Kind.
-func Decoder(manifest io.Reader, defaults *schema.GroupVersionKind, fn func(k8s.Object), patches ...MutateFunc) error {
+// Decode any single-document YAML or JSON input using either the innate typing of the scheme or the default kind, group, and version provided.
+// Falls back to the unstructured.Unstructured type if a matching type cannot be found for the Kind.
+// Patches are optional and applied after decoding.
+func DecodeAny(manifest io.Reader, defaults *schema.GroupVersionKind, patches ...MutateFunc) (k8s.Object, error) {
 	k8sDecoder := serializer.NewCodecFactory(scheme.Scheme).UniversalDeserializer().Decode
-	decoder := yaml.NewYAMLOrJSONDecoder(manifest, 1024)
-	for {
-		// using decoder to split documents, incurring second decode
-		var raw runtime.RawExtension
-		if err := decoder.Decode(&raw); errors.Is(err, io.EOF) {
-			break
-		} else if err != nil {
-			return err
-		}
-		var obj k8s.Object
-		runtimeObj, _, err := k8sDecoder(raw.Raw, defaults, nil)
-		if err != nil {
-			return err
-		}
-		obj = runtimeObj.(k8s.Object)
-		for _, patch := range patches {
-			patch(obj)
-		}
-		fn(obj)
+	b, err := io.ReadAll(manifest)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	runtimeObj, _, err := k8sDecoder(b, defaults, nil)
+	if runtime.IsNotRegisteredError(err) {
+		// fallback to the unstructured.Unstructured type if a type is not registered for the Object to be decoded
+		runtimeObj = &unstructured.Unstructured{}
+		if err := yaml.Unmarshal(b, runtimeObj); err != nil {
+			return nil, err
+		}
+	} else if err != nil {
+		return nil, err
+	}
+	obj, ok := runtimeObj.(k8s.Object)
+	if !ok {
+		return nil, err
+	}
+	for _, patch := range patches {
+		patch(obj)
+	}
+	return obj, nil
 }
 
 // Decode a single-document YAML or JSON file into the provided object. Patches are applied
@@ -289,5 +269,88 @@ func MutateAnnotations(overrides map[string]string) MutateFunc {
 func MutateOwnerAnnotations(owner k8s.Object) MutateFunc {
 	return func(obj k8s.Object) error {
 		return controllerutil.SetOwnerReference(owner, obj, scheme.Scheme)
+	}
+}
+
+// MutateNamespace can be used to patch objects with the given namespace name after being decoded
+func MutateNamespace(namespace string) MutateFunc {
+	return func(obj k8s.Object) error {
+		obj.SetNamespace(namespace)
+		return nil
+	}
+}
+
+// CreateHandler returns a HandlerFunc that will create objects
+func CreateHandler(r *Resources, opts ...CreateOption) HandlerFunc {
+	return func(ctx context.Context, obj k8s.Object) error {
+		return r.Create(ctx, obj, opts...)
+	}
+}
+
+// GetHandler returns a HandlerFunc that will replace objects by performing a Get for the objects of the same Kind/Name
+// and then calling handler to utilize the retrieved object
+func GetHandler(r *Resources, handler HandlerFunc) HandlerFunc {
+	return func(ctx context.Context, obj k8s.Object) error {
+		name := obj.GetName()
+		namespace := obj.GetNamespace()
+		// use scheme.Scheme to generate a new, empty object to use as a base for decoding into
+		gvk := obj.GetObjectKind().GroupVersionKind()
+		o, err := scheme.Scheme.New(gvk)
+		if err != nil {
+			return fmt.Errorf("resource: GroupVersionKind not found in scheme: %s", gvk.String())
+		}
+		obj, ok := o.(k8s.Object)
+		if !ok {
+			return fmt.Errorf("resource: unexpected type %T in list, does not satisfy k8s.Object", obj)
+		}
+		if err := r.Get(ctx, name, namespace, obj); err != nil {
+			return err
+		}
+		return handler(ctx, obj)
+	}
+}
+
+// UpdateHandler returns a HandlerFunc that will update objects
+func UpdateHandler(r *Resources, opts ...UpdateOption) HandlerFunc {
+	return func(ctx context.Context, obj k8s.Object) error {
+		return r.Update(ctx, obj, opts...)
+	}
+}
+
+// DeleteHandler returns a HandlerFunc that will delete objects
+func DeleteHandler(r *Resources, opts ...DeleteOption) HandlerFunc {
+	return func(ctx context.Context, obj k8s.Object) error {
+		return r.Delete(ctx, obj, opts...)
+	}
+}
+
+// IgnoreErrorHandler returns a HandlerFunc that will ignore the provided error if the errorMatcher returns true
+func IgnoreErrorHandler(handler HandlerFunc, errorMatcher func(err error) bool) HandlerFunc {
+	return func(ctx context.Context, obj k8s.Object) error {
+		if err := handler(ctx, obj); err != nil && errorMatcher(err) {
+			return err
+		}
+		return nil
+	}
+}
+
+// NoopHandler returns a Handler func that only returns nil
+func NoopHandler(r *Resources, opts ...DeleteOption) HandlerFunc {
+	return func(ctx context.Context, obj k8s.Object) error {
+		return nil
+	}
+}
+
+// CreateIgnoreAlreadyExists returns a HandlerFunc that will create objects if they do not already exist
+func CreateIgnoreAlreadyExists(r *Resources, opts ...CreateOption) HandlerFunc {
+	return func(ctx context.Context, obj k8s.Object) error {
+		return IgnoreErrorHandler(CreateHandler(r, opts...), apierrors.IsAlreadyExists)(ctx, obj)
+	}
+}
+
+// DeleteIgnoreNotFound returns a HandlerFunc that will create objects if they do not already exist
+func DeleteIgnoreNotFound(r *Resources, opts ...CreateOption) HandlerFunc {
+	return func(ctx context.Context, obj k8s.Object) error {
+		return IgnoreErrorHandler(CreateHandler(r, opts...), apierrors.IsNotFound)(ctx, obj)
 	}
 }
