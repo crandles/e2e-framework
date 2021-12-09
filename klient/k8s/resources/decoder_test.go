@@ -275,6 +275,14 @@ func TestHandlerFuncs(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+
+			if expected := 4; count != expected {
+				t.Fatalf("expected %d objects, got: %d", expected, count)
+			} else if expected := 3; expected != serviceAccounts {
+				t.Fatalf("expected %d serviceAccounts got %d", expected, serviceAccounts)
+			} else if expected := 1; expected != configs {
+				t.Fatalf("expected %d configs got %d", expected, configs)
+			}
 		})
 	})
 }
