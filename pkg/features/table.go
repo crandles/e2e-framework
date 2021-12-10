@@ -18,6 +18,8 @@ package features
 
 import (
 	"fmt"
+
+	"sigs.k8s.io/e2e-framework/pkg/internal/types"
 )
 
 // Table provides a structure for table-driven tests.
@@ -37,13 +39,27 @@ func (table Table) Build(featureName ...string) *FeatureBuilder {
 		name = featureName[0]
 	}
 	f := New(name)
-	for i, test := range table {
+	f.feat.steps = append(f.feat.steps, table.Steps()...)
+	return f
+}
+
+func (table *Table) Name() string {
+	return ""
+}
+
+func (table *Table) Labels() types.Labels {
+	return types.Labels{}
+}
+
+func (table *Table) Steps() []types.Step {
+	steps := []types.Step{}
+	for i, test := range *table {
 		if test.Name == "" {
 			test.Name = fmt.Sprintf("Assessment-%d", i)
 		}
 		if test.Assessment != nil {
-			f.Assess(test.Name, test.Assessment)
+			steps = append(steps, newStep(test.Name, types.LevelAssess, test.Assessment))
 		}
 	}
-	return f
+	return steps
 }
