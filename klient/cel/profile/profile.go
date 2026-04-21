@@ -68,7 +68,7 @@ func (rs Results) AllPassed() bool {
 // Err returns a single joined error covering every failing feature, or nil.
 // Suitable for returning directly from a features.Func on failure.
 func (rs Results) Err() error {
-	var errs []error
+	errs := make([]error, 0, len(rs))
 	for _, r := range rs {
 		errs = append(errs, r.Errors...)
 	}
