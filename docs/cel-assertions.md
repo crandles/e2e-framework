@@ -218,7 +218,7 @@ Each helper wraps the underlying CEL call in a `features.Func`, calls `t.Fatal` 
 
 ## CEL Proposal
 
-The following is a final proposal on the function signatures, after considering the above design components.
+Proposal on the function signatures:
 
 ```go
 // NewEvaluator returns an Evaluator configured for the admission CEL
