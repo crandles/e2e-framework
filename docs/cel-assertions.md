@@ -1,6 +1,6 @@
 # CEL Assertions
 
-This document proposes the design for a set of CEL ([Common Expression Language](https://github.com/google/cel-spec)) utilities in a new top-level package, `cel`, intended to let test developers write declarative assertions against Kubernetes objects in the same language the Kubernetes API server uses for admission and CRD validation. The goal of these utilities is to make test assertions terse, readable, and reusable as named conformance profiles that can be shared across projects.
+This document proposes the design for a set of CEL ([Common Expression Language](https://github.com/google/cel-spec)) utilities in a new top-level package, `cel`, intended to let test developers write declarative assertions against Kubernetes objects in the same language the Kubernetes API server uses for admission and CRD validation. The goal of these utilities is to make test assertions terse, readable, and consistent with the CEL expressions a project already ships in its admission policies and CRDs.
 
 ## Table of Contents
 
@@ -13,7 +13,6 @@ This document proposes the design for a set of CEL ([Common Expression Language]
     * [Variable Bindings](#Variable-Bindings)
     * [CEL Library Composition](#CEL-Library-Composition)
     * [Policy](#Policy)
-    * [Profile](#Profile)
     * [Feature Helpers](#Feature-Helpers)
 6. [CEL Proposal](#CEL-Proposal)
     * [Pre-defined Evaluators and Bindings](#pre-defined-evaluators-and-bindings)
@@ -27,9 +26,7 @@ When developing tests for Kubernetes components, it is common to fetch an object
 
 Kubernetes uses CEL for CRD `x-kubernetes-validations`, `ValidatingAdmissionPolicy`, and `MutatingAdmissionPolicy`. A test author wanting to exercise the same invariant a policy enforces has to translate the CEL expression into Go, which is easy to get wrong and adds drift between the test and the policy.
 
-A CEL utility in `cel` removes the translation step. The same expression that appears in a `ValidatingAdmissionPolicy` can appear in a test assertion, bound to the same variable names. Tests that need to check several invariants at once can group them into a reusable `Policy` or `Profile` value rather than inline every accessor.
-
-Finally, some projects want to publish a conformance profile: a named set of invariants that any implementation must satisfy. Today this is typically expressed in Go test code. A CEL-backed `Profile` is portable — it can be serialized, shared across projects, and evaluated without `e2e-framework` itself.
+A CEL utility in `cel` removes the translation step. The same expression that appears in a `ValidatingAdmissionPolicy` can appear in a test assertion, bound to the same variable names. Tests that need to check several invariants at once can group them into a reusable `Policy` value or chain multiple `Assess(...)` calls on a `features.Feature`, rather than inline every accessor.
 
 ## Supported CEL environments
 
@@ -43,7 +40,6 @@ The admission environment is the default. It matches what a `ValidatingAdmission
 - Provide a simple way to assert that a Kubernetes object satisfies a CEL expression, returning a Go `error`.
 - Support the variables and library functions the Kubernetes API server registers for admission CEL (`quantity`, `url`, `ip`, `cidr`, `regex`, `lists`, `format`, `semver`, `authz`, `jsonpatch`).
 - Support unit-testing `ValidatingAdmissionPolicy` validations offline against fixture objects, without a live API server.
-- Support named conformance profiles built from CEL invariants, with a structured pass/fail report.
 - Integrate with `pkg/features` so a CEL assertion reads as a one-line `Assess(...)`.
 - Cache compiled CEL programs to avoid repeated compile cost across assertions.
 
@@ -178,47 +174,7 @@ A companion helper converts a real `admissionregistrationv1.ValidatingAdmissionP
 func FromVAP(vap *admissionregistrationv1.ValidatingAdmissionPolicy) Policy
 ```
 
-This lets test authors load the same YAML the operator ships, without duplicating its validations in the test fixture.
-
-### **Profile**
-
-```go
-type Profile struct {
-    Name     string
-    Features []Feature
-}
-
-type Feature struct {
-    Name       string
-    Target     k8s.Object
-    Assertions []string
-    Bindings   Bindings // optional extras beyond `object`
-}
-
-type ProfileResult struct {
-    Feature string
-    Passed  bool
-    Errors  []error
-}
-
-type ProfileResults []ProfileResult
-```
-
-`Profile` is a named set of `Feature` entries, each with its own target object and CEL invariants. Every feature contributes one `ProfileResult` to the report.
-
-```go
-func (p Profile) Run(ev *Evaluator) ProfileResults
-
-func (rs ProfileResults) AllPassed() bool
-func (rs ProfileResults) Err() error
-func (rs ProfileResults) Report() string
-```
-
-Profiles may also be loaded from YAML so they can be shared across projects:
-
-```go
-func LoadProfile(r io.Reader) (Profile, error)
-```
+Paired with `klient/decoder`, a test can decode the same `ValidatingAdmissionPolicy` manifest the operator ships and check its validations against a fixture object — no re-expressing the rules in Go.
 
 ### **Feature Helpers**
 
@@ -230,10 +186,9 @@ type FetcherFunc func(context.Context, *envconf.Config) (k8s.Object, error)
 
 func Assert(ev *Evaluator, expr string, binder BinderFunc) features.Func
 func AssertPolicy(ev *Evaluator, pol Policy, fetcher FetcherFunc) features.Func
-func RunProfile(ev *Evaluator, prof Profile) features.Func
 ```
 
-The three primitives above take a `BinderFunc` or `FetcherFunc` that the
+The two primitives above take a `BinderFunc` or `FetcherFunc` that the
 caller supplies. For the 80% case — fetch a single named resource in the
 test namespace and assert on it — a pair of shortcut helpers collapses
 fetch + bind + assert into one call:
@@ -363,21 +318,6 @@ if !res.Passed() {
 }
 ```
 
-```go
-// LoadProfile reads a Profile from a YAML or JSON stream.
-func LoadProfile(r io.Reader) (Profile, error)
-```
-
-Usage:
-
-```go
-prof, _ := cel.LoadProfile(bytes.NewReader(profileYAML))
-results := prof.Run(ev)
-if !results.AllPassed() {
-    t.Fatal(results.Report())
-}
-```
-
 `features.Func` adapters:
 
 ```go
@@ -385,8 +325,6 @@ if !results.AllPassed() {
 func Assert(ev *Evaluator, expr string, binder BinderFunc) features.Func
 // AssertPolicy fetches an object and runs every validation in pol against it.
 func AssertPolicy(ev *Evaluator, pol Policy, fetcher FetcherFunc) features.Func
-// RunProfile evaluates prof and fails the assessment if any feature fails.
-func RunProfile(ev *Evaluator, prof Profile) features.Func
 ```
 
 Usage in a feature:
@@ -403,32 +341,18 @@ f := features.New("deployment is fully ready").
     Feature()
 ```
 
-Usage of a conformance profile:
+Chaining multiple invariants on the same feature:
 
 ```go
-prof := cel.Profile{
-    Name: "Deployment/baseline",
-    Features: []cel.Feature{
-        {
-            Name:   "replicas-fully-ready",
-            Target: &dep,
-            Assertions: []string{
-                "object.status.readyReplicas == object.spec.replicas",
-                "object.spec.replicas >= 1",
-            },
-        },
-        {
-            Name:   "has-pod-security-label",
-            Target: &ns,
-            Assertions: []string{
-                `has(object.metadata.labels) && "pod-security.kubernetes.io/enforce" in object.metadata.labels`,
-            },
-        },
-    },
-}
-
 f := features.New("baseline conformance").
-    Assess("profile passes", feature.RunProfile(ev, prof)).
+    Assess("replicas match",
+        feature.AssertObject(ev,
+            "object.status.readyReplicas == object.spec.replicas",
+            &appsv1.Deployment{}, "demo")).
+    Assess("at least one replica",
+        feature.AssertObject(ev,
+            "object.spec.replicas >= 1",
+            &appsv1.Deployment{}, "demo")).
     Feature()
 ```
 

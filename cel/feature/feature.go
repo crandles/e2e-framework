@@ -24,7 +24,6 @@ import (
 
 	"sigs.k8s.io/e2e-framework/cel"
 	"sigs.k8s.io/e2e-framework/cel/policy"
-	"sigs.k8s.io/e2e-framework/cel/profile"
 	"sigs.k8s.io/e2e-framework/klient/k8s"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
@@ -35,8 +34,8 @@ import (
 type BinderFunc func(context.Context, *envconf.Config) (cel.Bindings, error)
 
 // FetcherFunc returns a Kubernetes object to be bound as `object`. It is
-// the common simpler case of BinderFunc for policy and profile assertions
-// that only look at one object.
+// the common simpler case of BinderFunc for policy assertions that only
+// look at one object.
 type FetcherFunc func(context.Context, *envconf.Config) (k8s.Object, error)
 
 // Assert returns a features.Func that evaluates expr against the bindings
@@ -68,21 +67,6 @@ func AssertPolicy(ev *cel.Evaluator, pol policy.Policy, fetcher FetcherFunc) fea
 		}
 		if res := pol.Check(ev, obj); !res.Passed() {
 			t.Fatal(res.Err())
-		}
-		return ctx
-	}
-}
-
-// RunProfile evaluates prof and fails the assessment if any Feature fails.
-// On failure the full report is written to t.Log so the human-readable
-// summary appears in test output alongside t.Fatal.
-func RunProfile(ev *cel.Evaluator, prof profile.Profile) features.Func {
-	return func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
-		t.Helper()
-		rs := prof.Run(ev)
-		if !rs.AllPassed() {
-			t.Log(rs.Report())
-			t.Fatal(rs.Err())
 		}
 		return ctx
 	}

@@ -25,16 +25,15 @@ import (
 
 	"sigs.k8s.io/e2e-framework/cel"
 	"sigs.k8s.io/e2e-framework/cel/policy"
-	"sigs.k8s.io/e2e-framework/cel/profile"
 	"sigs.k8s.io/e2e-framework/klient/k8s"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 )
 
 // These tests exercise the happy path of each adapter. Failure behavior is
-// a thin t.Fatal call and is covered by the primitive tests in ../cel,
-// ../cel/policy, and ../cel/profile. The Go testing framework does not
-// give us a practical way to capture t.Fatal without failing the parent
-// test, which is itself a motivator for the pluggable-T work in #527.
+// a thin t.Fatal call and is covered by the primitive tests in ../cel and
+// ../cel/policy. The Go testing framework does not give us a practical way
+// to capture t.Fatal without failing the parent test, which is itself a
+// motivator for the pluggable-T work in #527.
 
 func dep(replicas, ready int32) *appsv1.Deployment {
 	return &appsv1.Deployment{
@@ -70,24 +69,6 @@ func TestAssertPolicy_happyPath(t *testing.T) {
 	fn(context.Background(), t, &envconf.Config{})
 }
 
-func TestRunProfile_happyPath(t *testing.T) {
-	ev := newEv(t)
-	prof := profile.Profile{
-		Name: "baseline",
-		Features: []profile.Feature{
-			{
-				Name:   "ready",
-				Target: dep(1, 1),
-				Assertions: []string{
-					"object.status.readyReplicas == object.spec.replicas",
-				},
-			},
-		},
-	}
-	fn := RunProfile(ev, prof)
-	fn(context.Background(), t, &envconf.Config{})
-}
-
 // TestAdapters_compileAsFeaturesFunc pins down that each adapter returns a
 // features.Func value — i.e. the type is exactly what features.Builder.Assess
 // accepts. If this compiles, the adapter surface matches the intended shape.
@@ -104,7 +85,6 @@ func TestAdapters_compileAsFeaturesFunc(t *testing.T) {
 	// Assign to concrete function type to catch signature drift at compile time.
 	_ = Assert(ev, "true", binder)
 	_ = AssertPolicy(ev, policy.Policy{}, fetcher)
-	_ = RunProfile(ev, profile.Profile{})
 }
 
 func newEv(t *testing.T) *cel.Evaluator {

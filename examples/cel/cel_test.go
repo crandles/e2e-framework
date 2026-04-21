@@ -30,7 +30,6 @@ import (
 	celdecoder "sigs.k8s.io/e2e-framework/cel/decoder"
 	celfeature "sigs.k8s.io/e2e-framework/cel/feature"
 	"sigs.k8s.io/e2e-framework/cel/policy"
-	"sigs.k8s.io/e2e-framework/cel/profile"
 	celwait "sigs.k8s.io/e2e-framework/cel/wait"
 	"sigs.k8s.io/e2e-framework/klient/wait"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
@@ -56,14 +55,13 @@ metadata:
   namespace: cel-ns
 `
 
-// TestCELAssertions demonstrates the five use cases the cel package
+// TestCELAssertions demonstrates the four use cases the cel package
 // is designed around:
 //
 //  1. One-line assertion against a live object (feature.AssertObject).
 //  2. Offline ValidatingAdmissionPolicy evaluation (feature.AssertPolicyOnObject).
-//  3. Named conformance profile (feature.RunProfile).
-//  4. wait.For backed by a CEL condition (celwait.Match).
-//  5. CEL assertions against decoded YAML manifests (celdecoder.AssertYAMLAll).
+//  3. wait.For backed by a CEL condition (celwait.Match).
+//  4. CEL assertions against decoded YAML manifests (celdecoder.AssertYAMLAll).
 func TestCELAssertions(t *testing.T) {
 	ev, err := klientcel.NewEvaluator()
 	if err != nil {
@@ -76,21 +74,6 @@ func TestCELAssertions(t *testing.T) {
 		Validations: []policy.Validation{
 			{Expression: "object.spec.replicas >= 1", Message: "replicas must be at least 1"},
 			{Expression: "object.spec.replicas <= 100", Message: "replicas must not exceed 100"},
-		},
-	}
-
-	// A conformance profile evaluated entirely in-process — no cluster
-	// fetch, good for asserting on fixtures and test-constructed objects.
-	baselineProfile := profile.Profile{
-		Name: "Deployment/baseline",
-		Features: []profile.Feature{
-			{
-				Name:   "replicas-fully-ready",
-				Target: newDeployment("placeholder", "cel-demo", 2),
-				Assertions: []string{
-					"object.spec.replicas >= 1",
-				},
-			},
 		},
 	}
 
@@ -125,8 +108,10 @@ func TestCELAssertions(t *testing.T) {
 			celfeature.AssertPolicyOnObject(ev, replicasPolicy,
 				&appsv1.Deployment{}, "cel-demo"),
 		).
-		Assess("conformance profile passes",
-			celfeature.RunProfile(ev, baselineProfile),
+		Assess("live object has at least one replica",
+			celfeature.AssertObject(ev,
+				"object.spec.replicas >= 1",
+				&appsv1.Deployment{}, "cel-demo"),
 		).
 		Assess("every object in a YAML manifest has a namespace",
 			func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
