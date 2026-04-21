@@ -33,32 +33,32 @@ import (
 // Policy is a named collection of CEL validations, mirroring the shape of
 // ValidatingAdmissionPolicy.spec.validations.
 type Policy struct {
-	Name        string
-	Validations []Validation
+	Name        string       `json:"name"`
+	Validations []Validation `json:"validations"`
 }
 
 // Validation is one CEL rule within a Policy.
 type Validation struct {
 	// Expression is the CEL expression evaluated against the target object.
 	// It must return a bool; a true result admits, false rejects.
-	Expression string
+	Expression string `json:"expression"`
 	// Message is a human-readable failure explanation surfaced when the
 	// expression evaluates to false. Defaults to Expression when empty.
-	Message string
+	Message string `json:"message,omitempty"`
 	// Reason mirrors ValidatingAdmissionPolicy.spec.validations[*].reason.
-	Reason metav1.StatusReason
+	Reason metav1.StatusReason `json:"reason,omitempty"`
 }
 
 // Failure captures a single failed Validation within a Result.
 type Failure struct {
-	Validation Validation
-	Err        error
+	Validation Validation `json:"validation"`
+	Err        error      `json:"error,omitempty"`
 }
 
 // Result is the report of a Policy.Check.
 type Result struct {
-	PolicyName string
-	Failures   []Failure
+	PolicyName string    `json:"policyName"`
+	Failures   []Failure `json:"failures,omitempty"`
 }
 
 // Passed reports whether every validation admitted the object.
