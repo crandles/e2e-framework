@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package decoder bridges klient/decoder with klient/cel so CEL assertions
+// Package decoder bridges klient/decoder with cel so CEL assertions
 // can run over YAML or JSON manifests decoded through the framework's
 // decoder. Two shapes are exposed:
 //
@@ -29,8 +29,8 @@ import (
 	"fmt"
 	"io"
 
-	"sigs.k8s.io/e2e-framework/klient/cel"
-	"sigs.k8s.io/e2e-framework/klient/cel/policy"
+	"sigs.k8s.io/e2e-framework/cel"
+	"sigs.k8s.io/e2e-framework/cel/policy"
 	kdecoder "sigs.k8s.io/e2e-framework/klient/decoder"
 	"sigs.k8s.io/e2e-framework/klient/k8s"
 )

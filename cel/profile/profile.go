@@ -24,7 +24,7 @@ import (
 	"fmt"
 	"strings"
 
-	"sigs.k8s.io/e2e-framework/klient/cel"
+	"sigs.k8s.io/e2e-framework/cel"
 	"sigs.k8s.io/e2e-framework/klient/k8s"
 )
 

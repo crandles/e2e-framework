@@ -1,6 +1,6 @@
 # CEL Assertions
 
-This document proposes the design for a set of CEL ([Common Expression Language](https://github.com/google/cel-spec)) utilities in a new package, `klient/cel`, intended to let test developers write declarative assertions against Kubernetes objects in the same language the Kubernetes API server uses for admission and CRD validation. The goal of these utilities is to make test assertions terse, readable, and reusable as named conformance profiles that can be shared across projects.
+This document proposes the design for a set of CEL ([Common Expression Language](https://github.com/google/cel-spec)) utilities in a new top-level package, `cel`, intended to let test developers write declarative assertions against Kubernetes objects in the same language the Kubernetes API server uses for admission and CRD validation. The goal of these utilities is to make test assertions terse, readable, and reusable as named conformance profiles that can be shared across projects.
 
 ## Table of Contents
 
@@ -27,7 +27,7 @@ When developing tests for Kubernetes components, it is common to fetch an object
 
 Kubernetes uses CEL for CRD `x-kubernetes-validations`, `ValidatingAdmissionPolicy`, and `MutatingAdmissionPolicy`. A test author wanting to exercise the same invariant a policy enforces has to translate the CEL expression into Go, which is easy to get wrong and adds drift between the test and the policy.
 
-A CEL utility in `klient/cel` removes the translation step. The same expression that appears in a `ValidatingAdmissionPolicy` can appear in a test assertion, bound to the same variable names. Tests that need to check several invariants at once can group them into a reusable `Policy` or `Profile` value rather than inline every accessor.
+A CEL utility in `cel` removes the translation step. The same expression that appears in a `ValidatingAdmissionPolicy` can appear in a test assertion, bound to the same variable names. Tests that need to check several invariants at once can group them into a reusable `Policy` or `Profile` value rather than inline every accessor.
 
 Finally, some projects want to publish a conformance profile: a named set of invariants that any implementation must satisfy. Today this is typically expressed in Go test code. A CEL-backed `Profile` is portable — it can be serialized, shared across projects, and evaluated without `e2e-framework` itself.
 
@@ -222,7 +222,7 @@ func LoadProfile(r io.Reader) (Profile, error)
 
 ### **Feature Helpers**
 
-A thin `klient/cel/feature` sub-package adapts primitives into `features.Func` values, so CEL primitives stay test-framework agnostic.
+A thin `cel/feature` sub-package adapts primitives into `features.Func` values, so CEL primitives stay test-framework agnostic.
 
 ```go
 type BinderFunc  func(context.Context, *envconf.Config) (Bindings, error)
@@ -435,7 +435,7 @@ f := features.New("baseline conformance").
 ### Wait Integration
 
 `klient/wait.For` drives polling against a `ConditionWithContextFunc`. A
-companion `klient/cel/wait` package supplies conditions whose predicate is
+companion `cel/wait` package supplies conditions whose predicate is
 expressed in CEL, so the same polling machinery that powers `wait.For` can
 terminate on any CEL invariant without a hand-written matcher.
 
@@ -480,7 +480,7 @@ err := wait.For(
 ### Decoder Integration
 
 `klient/decoder` already reads YAML/JSON into `k8s.Object` values (single
-or multi-document, file, string, or URL). A `klient/cel/decoder` sub-package
+or multi-document, file, string, or URL). A `cel/decoder` sub-package
 layers CEL assertions on top, with two shapes: `HandlerFunc` factories that
 plug into streaming decoders, and one-shot helpers for the common cases.
 

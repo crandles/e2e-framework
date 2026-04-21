@@ -26,12 +26,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	klientcel "sigs.k8s.io/e2e-framework/klient/cel"
-	celdecoder "sigs.k8s.io/e2e-framework/klient/cel/decoder"
-	celfeature "sigs.k8s.io/e2e-framework/klient/cel/feature"
-	"sigs.k8s.io/e2e-framework/klient/cel/policy"
-	"sigs.k8s.io/e2e-framework/klient/cel/profile"
-	celwait "sigs.k8s.io/e2e-framework/klient/cel/wait"
+	klientcel "sigs.k8s.io/e2e-framework/cel"
+	celdecoder "sigs.k8s.io/e2e-framework/cel/decoder"
+	celfeature "sigs.k8s.io/e2e-framework/cel/feature"
+	"sigs.k8s.io/e2e-framework/cel/policy"
+	"sigs.k8s.io/e2e-framework/cel/profile"
+	celwait "sigs.k8s.io/e2e-framework/cel/wait"
 	"sigs.k8s.io/e2e-framework/klient/wait"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
@@ -56,7 +56,7 @@ metadata:
   namespace: cel-ns
 `
 
-// TestCELAssertions demonstrates the five use cases the klient/cel package
+// TestCELAssertions demonstrates the five use cases the cel package
 // is designed around:
 //
 //  1. One-line assertion against a live object (feature.AssertObject).

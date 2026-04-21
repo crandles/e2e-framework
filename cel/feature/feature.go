@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package feature adapts the klient/cel primitives into features.Func values
+// Package feature adapts the cel primitives into features.Func values
 // so CEL assertions read as a one-line Assess in a test.
 package feature
 
@@ -22,9 +22,9 @@ import (
 	"context"
 	"testing"
 
-	"sigs.k8s.io/e2e-framework/klient/cel"
-	"sigs.k8s.io/e2e-framework/klient/cel/policy"
-	"sigs.k8s.io/e2e-framework/klient/cel/profile"
+	"sigs.k8s.io/e2e-framework/cel"
+	"sigs.k8s.io/e2e-framework/cel/policy"
+	"sigs.k8s.io/e2e-framework/cel/profile"
 	"sigs.k8s.io/e2e-framework/klient/k8s"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"

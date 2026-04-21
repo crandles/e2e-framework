@@ -24,7 +24,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"sigs.k8s.io/e2e-framework/klient/cel"
+	"sigs.k8s.io/e2e-framework/cel"
 )
 
 func dep(replicas int32) *appsv1.Deployment {

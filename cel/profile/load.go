@@ -23,7 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
 
-	"sigs.k8s.io/e2e-framework/klient/cel"
+	"sigs.k8s.io/e2e-framework/cel"
 )
 
 // profileDoc is the on-disk YAML/JSON shape of a Profile. The Target of

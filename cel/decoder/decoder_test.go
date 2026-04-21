@@ -24,8 +24,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"sigs.k8s.io/e2e-framework/klient/cel"
-	"sigs.k8s.io/e2e-framework/klient/cel/policy"
+	"sigs.k8s.io/e2e-framework/cel"
+	"sigs.k8s.io/e2e-framework/cel/policy"
 	kdecoder "sigs.k8s.io/e2e-framework/klient/decoder"
 )
 

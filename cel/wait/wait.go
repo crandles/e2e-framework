@@ -25,7 +25,7 @@ import (
 
 	apimachinerywait "k8s.io/apimachinery/pkg/util/wait"
 
-	"sigs.k8s.io/e2e-framework/klient/cel"
+	"sigs.k8s.io/e2e-framework/cel"
 	"sigs.k8s.io/e2e-framework/klient/k8s"
 	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
 )

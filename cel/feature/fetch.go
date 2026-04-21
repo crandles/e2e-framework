@@ -20,7 +20,7 @@ import (
 	"context"
 	"fmt"
 
-	"sigs.k8s.io/e2e-framework/klient/cel"
+	"sigs.k8s.io/e2e-framework/cel"
 	"sigs.k8s.io/e2e-framework/klient/k8s"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 )
