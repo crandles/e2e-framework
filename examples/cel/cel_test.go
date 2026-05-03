@@ -14,105 +14,146 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package cel demonstrates the cel and cel/policy packages without a live
-// cluster: every assertion is evaluated offline against a fixture object,
-// the same way a unit test would exercise a ValidatingAdmissionPolicy
-// without standing up an API server.
 package cel
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
-	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	celpkg "sigs.k8s.io/e2e-framework/cel"
+	klientcel "sigs.k8s.io/e2e-framework/cel"
+	celdecoder "sigs.k8s.io/e2e-framework/cel/decoder"
+	celfeature "sigs.k8s.io/e2e-framework/cel/feature"
 	"sigs.k8s.io/e2e-framework/cel/policy"
-	"sigs.k8s.io/e2e-framework/klient/decoder"
+	celwait "sigs.k8s.io/e2e-framework/cel/wait"
+	"sigs.k8s.io/e2e-framework/klient/wait"
+	"sigs.k8s.io/e2e-framework/pkg/envconf"
+	"sigs.k8s.io/e2e-framework/pkg/features"
 )
 
-// vapYAML is the same shape an operator would ship as a
-// ValidatingAdmissionPolicy. policy.FromVAP turns it into a Policy that
-// can be run offline against fixture objects.
-const vapYAML = `
-apiVersion: admissionregistration.k8s.io/v1
-kind: ValidatingAdmissionPolicy
+// Manifest used by the YAML-assertion step. Multi-document to exercise the
+// streaming path that a typical operator author would apply to their
+// rendered Helm or kustomize output.
+const manifestYAML = `
+apiVersion: v1
+kind: ConfigMap
 metadata:
-  name: deployment-replicas
-spec:
-  matchConstraints:
-    resourceRules:
-    - apiGroups:   ["apps"]
-      apiVersions: ["v1"]
-      operations:  ["CREATE","UPDATE"]
-      resources:   ["deployments"]
-  validations:
-    - expression: "object.spec.replicas >= 1"
-      message: "replicas must be at least 1"
-    - expression: "object.spec.replicas <= 100"
-      message: "replicas must not exceed 100"
+  name: cel-cfg
+  namespace: cel-ns
+data:
+  greeting: hello
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cel-sa
+  namespace: cel-ns
 `
 
-func TestEvaluatorAssert(t *testing.T) {
-	ev, err := celpkg.NewEvaluator()
+// TestCELAssertions demonstrates the four use cases the cel package
+// is designed around:
+//
+//  1. One-line assertion against a live object (feature.AssertObject).
+//  2. Offline ValidatingAdmissionPolicy evaluation (feature.AssertPolicyOnObject).
+//  3. wait.For backed by a CEL condition (celwait.Match).
+//  4. CEL assertions against decoded YAML manifests (celdecoder.AssertYAMLAll).
+func TestCELAssertions(t *testing.T) {
+	ev, err := klientcel.NewEvaluator()
 	if err != nil {
 		t.Fatal(err)
 	}
-	dep := newDeployment("cel-demo", 2)
-	if err := ev.Assert("object.spec.replicas >= 1", celpkg.ObjectBinding(dep)); err != nil {
-		t.Fatal(err)
-	}
-}
 
-func TestPolicyCheck(t *testing.T) {
-	ev, err := celpkg.NewEvaluator()
-	if err != nil {
-		t.Fatal(err)
-	}
-	pol := policy.Policy{
+	// A small policy with the shape a ValidatingAdmissionPolicy would ship.
+	replicasPolicy := policy.Policy{
 		Name: "deployment-replicas",
 		Validations: []policy.Validation{
 			{Expression: "object.spec.replicas >= 1", Message: "replicas must be at least 1"},
 			{Expression: "object.spec.replicas <= 100", Message: "replicas must not exceed 100"},
 		},
 	}
-	if res := pol.Check(ev, newDeployment("cel-demo", 2)); !res.Passed() {
-		t.Fatal(res.Err())
-	}
-	if res := pol.Check(ev, newDeployment("cel-demo", 0)); res.Passed() {
-		t.Fatal("expected validation failure for replicas=0")
-	}
+
+	f := features.New("deployment/cel-assertions").
+		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			client, err := cfg.NewClient()
+			if err != nil {
+				t.Fatal(err)
+			}
+			dep := newDeployment(cfg.Namespace(), "cel-demo", 2)
+			if err := client.Resources().Create(ctx, dep); err != nil {
+				t.Fatal(err)
+			}
+			// Use a CEL condition as our readiness gate — on each poll the
+			// Deployment is refetched and the expression is re-evaluated.
+			err = wait.For(
+				celwait.Match(client.Resources(), ev, &appsv1.Deployment{}, "cel-demo", cfg.Namespace(),
+					"object.status.readyReplicas == object.spec.replicas"),
+				wait.WithTimeout(2*time.Minute),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return ctx
+		}).
+		Assess("live object passes single CEL assertion",
+			celfeature.AssertObject(ev,
+				"object.status.readyReplicas == object.spec.replicas",
+				&appsv1.Deployment{}, "cel-demo"),
+		).
+		Assess("live object passes VAP-shaped policy offline",
+			celfeature.AssertPolicyOnObject(ev, replicasPolicy,
+				&appsv1.Deployment{}, "cel-demo"),
+		).
+		Assess("live object has at least one replica",
+			celfeature.AssertObject(ev,
+				"object.spec.replicas >= 1",
+				&appsv1.Deployment{}, "cel-demo"),
+		).
+		Assess("every object in a YAML manifest has a namespace",
+			func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
+				if err := celdecoder.AssertYAMLAll(ctx, ev,
+					`object.metadata.namespace != ""`,
+					strings.NewReader(manifestYAML),
+				); err != nil {
+					t.Fatal(err)
+				}
+				return ctx
+			},
+		).
+		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			client, err := cfg.NewClient()
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = client.Resources().Delete(ctx, newDeployment(cfg.Namespace(), "cel-demo", 2))
+			return ctx
+		}).
+		Feature()
+
+	testenv.Test(t, f)
 }
 
-func TestPolicyFromVAP(t *testing.T) {
-	ev, err := celpkg.NewEvaluator()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var vap admissionregistrationv1.ValidatingAdmissionPolicy
-	if err := decoder.Decode(strings.NewReader(vapYAML), &vap); err != nil {
-		t.Fatal(err)
-	}
-	pol := policy.FromVAP(&vap)
-	if res := pol.Check(ev, newDeployment("cel-demo", 2)); !res.Passed() {
-		t.Fatal(res.Err())
-	}
-}
-
-func newDeployment(name string, replicas int32) *appsv1.Deployment {
+func newDeployment(namespace, name string, replicas int32) *appsv1.Deployment {
 	labels := map[string]string{"app": "cel-example"}
 	return &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels:    labels,
+		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{MatchLabels: labels},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{{Name: "nginx", Image: "nginx"}},
+					Containers: []corev1.Container{
+						{Name: "nginx", Image: "nginx"},
+					},
 				},
 			},
 		},
