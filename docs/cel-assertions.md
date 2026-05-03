@@ -13,9 +13,12 @@ This document proposes the design for a set of CEL ([Common Expression Language]
     * [Variable Bindings](#Variable-Bindings)
     * [CEL Library Composition](#CEL-Library-Composition)
     * [Policy](#Policy)
+    * [Feature Helpers](#Feature-Helpers)
 6. [CEL Proposal](#CEL-Proposal)
     * [Pre-defined Evaluators and Bindings](#pre-defined-evaluators-and-bindings)
     * [Pre-defined Helpers](#Pre-defined-Helpers)
+    * [Wait Integration](#Wait-Integration)
+    * [Decoder Integration](#Decoder-Integration)
 
 ## Motivation
 
@@ -173,6 +176,46 @@ func FromVAP(vap *admissionregistrationv1.ValidatingAdmissionPolicy) Policy
 
 Paired with `klient/decoder`, a test can decode the same `ValidatingAdmissionPolicy` manifest the operator ships and check its validations against a fixture object — no re-expressing the rules in Go.
 
+### **Feature Helpers**
+
+A thin `cel/feature` sub-package adapts primitives into `features.Func` values, so CEL primitives stay test-framework agnostic.
+
+```go
+type BinderFunc  func(context.Context, *envconf.Config) (Bindings, error)
+type FetcherFunc func(context.Context, *envconf.Config) (k8s.Object, error)
+
+func Assert(ev *Evaluator, expr string, binder BinderFunc) features.Func
+func AssertPolicy(ev *Evaluator, pol Policy, fetcher FetcherFunc) features.Func
+```
+
+The two primitives above take a `BinderFunc` or `FetcherFunc` that the
+caller supplies. For the 80% case — fetch a single named resource in the
+test namespace and assert on it — a pair of shortcut helpers collapses
+fetch + bind + assert into one call:
+
+```go
+// AssertObject fetches target by name in cfg.Namespace() and asserts expr.
+func AssertObject(ev *Evaluator, expr string, target k8s.Object, name string) features.Func
+// AssertObjectIn is like AssertObject but uses the given namespace.
+func AssertObjectIn(ev *Evaluator, expr string, target k8s.Object, name, namespace string) features.Func
+
+// AssertPolicyOnObject runs pol against target fetched by name in cfg.Namespace().
+func AssertPolicyOnObject(ev *Evaluator, pol Policy, target k8s.Object, name string) features.Func
+func AssertPolicyOnObjectIn(ev *Evaluator, pol Policy, target k8s.Object, name, namespace string) features.Func
+```
+
+The low-level fetch helpers stay exported for callers composing multi-binding assertions:
+
+```go
+// Fetch returns a FetcherFunc that Gets target by name from namespace.
+// If namespace is empty, cfg.Namespace() is used.
+func Fetch(target k8s.Object, name, namespace string) FetcherFunc
+// AsBinder adapts a FetcherFunc into a BinderFunc binding `object`.
+func AsBinder(f FetcherFunc) BinderFunc
+```
+
+Each helper wraps the underlying CEL call in a `features.Func`, calls `t.Fatal` on failure, and returns the context unchanged.
+
 ## CEL Proposal
 
 Proposal on the function signatures:
@@ -273,4 +316,140 @@ res := pol.Check(ev, &dep)
 if !res.Passed() {
     t.Fatal(res.Err())
 }
+```
+
+`features.Func` adapters:
+
+```go
+// Assert evaluates expr against the bindings produced by binder.
+func Assert(ev *Evaluator, expr string, binder BinderFunc) features.Func
+// AssertPolicy fetches an object and runs every validation in pol against it.
+func AssertPolicy(ev *Evaluator, pol Policy, fetcher FetcherFunc) features.Func
+```
+
+Usage in a feature:
+
+```go
+ev, _ := cel.NewEvaluator()
+
+f := features.New("deployment is fully ready").
+    Assess("replicas match", feature.Assert(
+        ev,
+        "object.status.readyReplicas == object.spec.replicas",
+        fetchDeployment("demo", "default"),
+    )).
+    Feature()
+```
+
+Chaining multiple invariants on the same feature:
+
+```go
+f := features.New("baseline conformance").
+    Assess("replicas match",
+        feature.AssertObject(ev,
+            "object.status.readyReplicas == object.spec.replicas",
+            &appsv1.Deployment{}, "demo")).
+    Assess("at least one replica",
+        feature.AssertObject(ev,
+            "object.spec.replicas >= 1",
+            &appsv1.Deployment{}, "demo")).
+    Feature()
+```
+
+### Wait Integration
+
+`klient/wait.For` drives polling against a `ConditionWithContextFunc`. A
+companion `cel/wait` package supplies conditions whose predicate is
+expressed in CEL, so the same polling machinery that powers `wait.For` can
+terminate on any CEL invariant without a hand-written matcher.
+
+```go
+// Match returns a ConditionWithContextFunc that refetches target on every
+// poll and evaluates expr against it. Succeeds when expr returns true.
+func Match(r *resources.Resources, ev *cel.Evaluator, target k8s.Object,
+    name, namespace, expr string) apimachinerywait.ConditionWithContextFunc
+
+// MatchAny is like Match but accepts additional bindings (for example a
+// `request` binding) that are merged in alongside `object`.
+func MatchAny(r *resources.Resources, ev *cel.Evaluator, target k8s.Object,
+    name, namespace, expr string, extra cel.Bindings) apimachinerywait.ConditionWithContextFunc
+```
+
+Fetch errors (including `NotFound`) are treated as transient so the poll
+keeps retrying until the overall `wait.For` timeout elapses. CEL compile
+and type errors are terminal and halt the poll immediately.
+
+Usage, waiting for a Deployment to roll out:
+
+```go
+err := wait.For(
+    celwait.Match(client.Resources(), ev, &appsv1.Deployment{}, "cel-demo", cfg.Namespace(),
+        "object.status.readyReplicas == object.spec.replicas"),
+    wait.WithTimeout(2*time.Minute),
+)
+```
+
+Waiting with an extra binding:
+
+```go
+err := wait.For(
+    celwait.MatchAny(client.Resources(), ev, &corev1.Pod{}, "demo", cfg.Namespace(),
+        `object.status.phase == "Running" && request.dryRun == false`,
+        cel.RequestBinding(&cel.AdmissionRequest{DryRun: false}),
+    ),
+    wait.WithTimeout(time.Minute),
+)
+```
+
+### Decoder Integration
+
+`klient/decoder` already reads YAML/JSON into `k8s.Object` values (single
+or multi-document, file, string, or URL). A `cel/decoder` sub-package
+layers CEL assertions on top, with two shapes: `HandlerFunc` factories that
+plug into streaming decoders, and one-shot helpers for the common cases.
+
+```go
+// AssertHandler returns a decoder.HandlerFunc that asserts expr against
+// every decoded object.
+func AssertHandler(ev *cel.Evaluator, expr string) decoder.HandlerFunc
+
+// PolicyHandler returns a decoder.HandlerFunc that runs pol against every
+// decoded object.
+func PolicyHandler(ev *cel.Evaluator, pol policy.Policy) decoder.HandlerFunc
+
+// AssertYAML decodes a single-document manifest and asserts expr.
+func AssertYAML(ev *cel.Evaluator, expr string, manifest io.Reader) error
+
+// AssertYAMLAll decodes a multi-document stream and asserts expr against
+// every object, halting on the first failure.
+func AssertYAMLAll(ctx context.Context, ev *cel.Evaluator, expr string, manifest io.Reader) error
+```
+
+Usage, asserting every object in a multi-document manifest has a namespace:
+
+```go
+err := celdecoder.AssertYAMLAll(ctx, ev,
+    `object.metadata.namespace != ""`,
+    strings.NewReader(manifestYAML))
+```
+
+Usage with an existing decoder stream:
+
+```go
+err := decoder.DecodeEachFile(ctx, os.DirFS("testdata"), "*.yaml",
+    celdecoder.AssertHandler(ev, `object.kind != "Pod"`))
+```
+
+Usage running a full policy per decoded object:
+
+```go
+pol := policy.Policy{
+    Name: "shape",
+    Validations: []policy.Validation{
+        {Expression: `has(object.metadata.namespace)`, Message: "must set namespace"},
+        {Expression: `object.metadata.name != ""`, Message: "must set name"},
+    },
+}
+err := decoder.DecodeEach(ctx, strings.NewReader(manifest),
+    celdecoder.PolicyHandler(ev, pol))
 ```
